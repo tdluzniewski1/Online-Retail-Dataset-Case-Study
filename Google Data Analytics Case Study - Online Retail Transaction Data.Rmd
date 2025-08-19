@@ -1,0 +1,1927 @@
+---
+title: 'Case Study: Online Retail Transaction Data'
+author: "Thomas Dluzniewski"
+date: "2025-08-18"
+output: html_document
+---
+
+## Introduction to the Case Study
+
+I am Thomas Dluzniewski and this is my first data analytics case study. In this analysis, I am working with online retail transaction data from a UK-based retail company which contains a variety of different data relevant to figuring out optimal stocking strategies and being able to pinpoint which products sell well (and which ones do not) throughout a calendar year, which is the goal of this case study.
+
+I will be working on this analysis using Microsoft Excel, the R programming language, and SQL to extract useful inventory insights, create effective and digestible visualizations, and deliver a clear solution for a retail business. Overall, this case study will be used for inventory managers and executives in the company concerned with stocking throughout a typical year.
+
+Throughout this analysis, these key questions will be answered:
+
+* What specific products are popular at a given time of year?
+* Which specific times of year are there increases or decreases in sales?
+* Which products are popular in certain countries over others?
+* Which products are the most popular (by quantity and by liquidity)?
+
+Deliverables for this case study:
+
+* A cleaned data set that clearly shows proper cleaning techniques
+* A well defined markdown made in an R Markdown Folder
+* Data visualizations from R which demonstrate key findings
+* SQL queries that indicate valuable findings (averages, popular products, etc)
+
+*Note: Throughout this analysis, I am using the Ask, Prepare, Process, Analyze, Share, Act phase that was taught in the Google Data Analytics professional certificate.*
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(tidyverse)
+library(odbc)
+library(DBI)
+library(RSQLite)
+library(scales)
+library(patchwork)
+```
+
+
+
+## Preparing the Data for Analysis
+
+As mentioned in the introduction, this dataset contains a collection of online retail transaction records from a UK-based retail company. The data was sourced from Kaggle and can be accessed [here](https://www.kaggle.com/datasets/thedevastator/online-retail-transaction-data). The file was downloaded as a CSV and reviewed using both **Microsoft Excel** and **R** to get an initial understanding of its structure and contents.
+
+Here is the following code I used to load the data set into R Studio and get an idea of what is contained within it.
+
+```{r readcsv}
+# Loads in the csv file
+online_retail_data <- read.csv("online_retail_backup2.csv")
+# Structure of the csv file
+str(online_retail_data)
+# Number of rows
+nrow(online_retail_data)
+# Number of columns
+ncol(online_retail_data)
+```
+
+Overall, the data contains 541,910 rows with 9 columns.
+
+Based on this, I could see that most of the data types were reasonably set (e.g. int for index, chr for Invoice Number) but did not think that CustomerID should be labeled as a number and should be labeled as a character type, like the InvoiceNumber and StockCode, so as to avoid unnecessary calculations. Additionally, the InvoiceDate would be better formatted as a Date data type.
+
+### Viewing the Data in Excel
+
+I opened up the online_retail.csv file in Excel to get a better understanding of the data including potential problems like missing data entries, inefficient formatting, getting to know the time range of the data, and other relevant facts
+
+In this process, I discovered a couple deficiencies:
+
+* **Invoice data formatting:** The invoice date column was displayed in a mm/dd/yy h:mm format 
+* **CustomerID values:** There were several rows of missing customerID values
+* **Negative quantities:** Several negative purchase quantities were present
+* **InvoiceNo inconsistency:** Some invoice numbers had a 'C' present at the beginning of it
+
+The problem with these deficiencies is that they necessitated some sort of cleaning (or even removal) to fix them. For the invoice numbers beginning with a 'C' and the negative product quantities, I searched throughout the spreadsheet and found that these were present at the same time.
+
+For the missing customerID values, these rows will need to be removed to make ready for a proper analysis of returning customers later on. Additionally, it isn't certain that the purchases associated with no customerID could even be fully trusted to begin with.
+
+### Time Span of the Data
+
+```{r daterange}
+# Displays the earliest and latest invoice dates
+range(as.Date(online_retail_data$InvoiceDate, format = "%m/%d/%y %H:%M")) 
+```
+
+One of the most important distinctions I found in the data is the time span. The very first purchase recorded is on 12/1/2010 with the last purchase being recorded having been made on 12/9/2011 meaning that the time scope (roughly a year) would be limited, forcing my analysis to focus only on seasonal trends as opposed to making predictions in regards to future stocking problems in years to come. Additionally, since the data for December 2011 only covers the first 9 days of the month, I will be excluding this from the seasonal and monthly analysises later on. However, I will retain the data generally as it contains valuable information that indicates high-volume products.
+
+Another important note about the invoice dates was the format, which I noted above as a deficiency. Why I marked it as one is because of the inefficient format it is, which I saw as preventing me from being easily able to extract the month when conducting analysis on monthly sales later on. 
+
+
+### Quantitative Statistics about the Data
+
+In the process of surveying the data, I decided it would be best to summarize some important facts about the data including how many distinct countries are mentioned, the number of null CustomerID values, how many negative values were returned, and a couple others mentioned already.
+
+##### Number of Missing CustomerID values
+
+```{r}
+sum(is.na(online_retail_data$CustomerID))
+```
+
+There are 135,080 missing CustomerID values out of the 541,909 rows of data roughly equating to about **25% of CustomerIDs**. This necessitates cleaning of these values which are highly likely to be correlated to other bad data problems and cannot be fully trusted as valid orders.
+
+##### Number of Canceled Transactions
+
+```{r}
+# This determines how many Cs are present in the Invoice Numbers
+sum(grepl("^C", online_retail_data$InvoiceNo))
+# This determines how many times Cs in Invoice Numbers and negative quantities there are together
+sum(grepl("^C", online_retail_data$InvoiceNo) & online_retail_data$Quantity < 0)
+```
+
+In the data, **9,288 Invoice Numbers** contain a C located in them, indicating a canceled order. This was determined by the high correlation between the presence of negative purchase quantities and these specific Invoice numbers. In fact, every time there is an invoice number with a 'C' present, there is also a negative quantity purchased as both code results above are equivalent (that number being 9,288). 
+
+Given this high correlation, it can be reasonably assumed that these are refunded purchases. Thus, these purchases will be removed from the main data set to ensure an effective analysis.
+
+Overall, this means that out of the 541,909 rows of invoice numbers, about **2% of them** are marked as being canceled.
+
+These canceled invoice numbers will be separated into a new data set that will be used for determining the return rate for certain products which will be crucial in the **analysis** section of this report.
+
+*Note: The sum of the canceled Invoice Numbers is the same irregardless if grepl searches for a C in the first position or throughout ("^C" vs. "C")*
+
+##### Number of purchases with Negative Quantities
+
+```{r}
+# This code calculates how many quantity cells have negative or zero values
+sum(online_retail_data$Quantity < 0)
+# This code calculates what percentage of the quantity cells have negative or zero values
+10624/541909
+```
+In terms of negative purchase quantities, there are **10,624 of them**. This conflicts with the number of invoice numbers that indicate a canceled order since there are **9,288** canceled order invoices (as seen above). This made me curious and I decided to do some research into the file. While doing so, I found that when there was a negative quantity purchased with no canceled invoice statement, there were no CustomerIDs or Descriptions. This indicated that these were not valid transactions and should thus be disregarded.
+
+In total, only about **2% of purchase quantities** had negative values (there are none with a value of zero).
+
+##### Number of unique Countries
+
+```{r}
+# This code calculates how many unique countries there are
+length(unique(online_retail_data$Country))
+# This code calculates how many country cells are empty
+sum(online_retail_data$Country == "")
+```
+
+This code determined there are **38 unique countries** in the transactional data, indicating a decent variety of locales in the data. However, there are three non-countries among the countries, "Unspecified", "European Community", and the "Channel Islands". In future geographical analysis, purchases from these places will be excluded from future country based analysis except for the "Channel Islands". Since the channel islands are British dependencies, these will be simply be marked as purchases from the United Kingdom.
+
+##### Number of empty descriptions
+
+```{r}
+# This code Calculates how many description cells are empty
+sum(online_retail_data$Description == "")
+# This code calculates the percentage of empty description cells
+1454/510909
+```
+
+As mentioned before, there were negative purchase amounts located in the data even when the invoice statements did not have a 'C' indicating a canceled purchase. As a result, roughly **0.2% of the description cells are unlabeled**.
+
+##### Number of zero-value unit prices
+
+```{r}
+# Counts how many unit prices are equivalent to zero
+sum(online_retail_data$UnitPrice == 0, na.rm=TRUE)
+# Calculates the percentage of purchases with a unit price of zero
+40/397924
+```
+
+As can be seen above, this happens 2,515 times in the data, representing about **0.01% of total purchases**. Due to how insignificant this number is, and with nothing else seeming to be wrong with these purchases besides the unit price, and how the focus of this analysis is inventory optimization (not sales), I am retaining these values. Additionally, whenever the data is cleaned (see the next section), this number drops to 40.
+
+##### Non-products listed in description
+
+```{r}
+# Counts how many times there is a "Manual" or "POSTAGE" "order"
+online_retail_data %>%
+  filter(Description %in% c("Manual", "POSTAGE")) %>%
+  count(Description, name = "Frequency")
+```
+
+
+In the data, there are mentions of orders of "manual" and "postage" (specifically 572 for manual and 1252 for postage) likely referring to separate manuals for these products and the postage that customers pay for the products to be delivered. In the processing section, these values will be removed since they are not relevant for the objective of this case study.
+
+##### Other values
+
+There is an index column on the far-left which is indexed from 0, to 1, and on and on. This column is superfluous and will not be needed for the analysis. Besides this, there are some extreme quantity values like 80,995. When processing the data, purchases with extreme quantity values will be kept since the primary interest here is in inventory management and B2B sales are a core part of this task.
+
+### Conclusion to Preparation
+
+Overall, these are some (not all) of the notable observations made from the preparation phase:
+
+* New columns will have to be created for date, time, and month based upon the InvoiceDate column
+* Negative product quantities would have to be removed
+* InvoiceNo's beginning with a 'C' would also have to be removed
+* Rows with missing CustomerIDs would have to be removed
+* CustomerID and InvoiceDate would have to be recast to more appropriate data types
+
+
+## Processing Data for Useful Analysis
+
+After going through a thorough breakdown of the data, I now move on to processing the data. Essentially, cleaning it by removing the deficiencies mentioned above, adding new useful columns, and making sure the data is proper and ready for full analysis.
+
+### Initial Cleaning
+
+The very first part of processing the data is going to be re-configuring the data types I mentioned above.
+
+```{r}
+# This recasts the CustomerID and InvoiceDates to their appropriate data types
+online_retail_data$CustomerID <- as.character(online_retail_data$CustomerID)
+online_retail_data$InvoiceDate <- as.POSIXct(online_retail_data$InvoiceDate, format = "%m/%d/%y %H:%M")
+# This gives the structure before data type after the changes have been made
+str(online_retail_data)
+```
+Now that the data type changes have been made, the data must now be cleaned from the variety of issues described above (e.g. negative quantities, canceled invoices).
+
+```{r}
+cleaned_online_retail_data <- online_retail_data %>% 
+  # Filters out orders with empty customer ids
+  filter(!is.na(CustomerID)) %>%
+  # Filters out purchases with negative quantities
+  filter(Quantity > 0) %>%
+  # Filters out purchases with canceled invoices
+  filter(!grepl("^C", InvoiceNo)) %>%
+  # Filters out purchases with missing product descriptions
+  filter(Description != "")
+```
+
+From this code, a new **"cleaned_online_retail_data"** variable is created, with the orders that had empty CustomerIDs, negative quantities, canceled invoices, and empty descriptions completely removed from the data.
+
+To verify that the data had been cleaned, I used the following code.
+
+```{r}
+# Number of missing CustomerIDs removed
+sum(is.na(online_retail_data$CustomerID))
+
+# Number of negative quantities removed
+sum(online_retail_data$Quantity <= 0)
+
+# Number of InvoiceNo starting with 'C'
+sum(grepl("^C", online_retail_data$InvoiceNo))
+
+# No missing CustomerID now
+sum(is.na(cleaned_online_retail_data$CustomerID))
+
+# No negative quantities
+sum(cleaned_online_retail_data$Quantity <= 0)  
+
+# No 'C' invoices
+sum(grepl("^C", cleaned_online_retail_data$InvoiceNo))  
+```
+
+As can be seen above, the filtered dataset shows zero invalid entries, confirming that the cleaning has been successful.
+
+Before the main data set will be mutated, we will also have to separate the canceled orders into a separate data set which, as discussed above, will be used in the **analysis section** of this report.
+
+```{r}
+# This separates the orders with invoice numbers that have a C indicating a refunded or canceled order
+refunded_orders <- online_retail_data %>%
+  filter(grepl("^C", InvoiceNo)) %>%
+  mutate(CustomerID = as.character(CustomerID))
+
+# This code filters out the remaining orders with empty descriptions and customer IDs
+refunded_orders <- refunded_orders %>%
+  filter(!is.na(CustomerID), Description != "")
+```
+
+Now with this separate data set created, we can move on to manipulation of these two data sets.
+
+### Mutation of the Data
+
+Moving on, we can now move to the creation of new and useful data columns which will be created below. These columns will be used for future analysis to pinpoint exact times inventory management should be informed of movement of products.
+
+```{r}
+# This code block below mutates the cleaned data by adding additional columns and removing unnecessary ones
+cleaned_online_retail_data <- cleaned_online_retail_data %>%
+  filter(!(Description %in% c("Manual", "POSTAGE"))) %>%
+  # This removes the index column which is superfluous to our analysis
+  select(-index) %>%
+  mutate(
+    # Creates a new column that retains the month, day, and year of the invoice
+    FullInvoiceDate = as.Date(InvoiceDate),
+    # Creates a new column that retains the time of the invoice
+    InvoiceTime = format(InvoiceDate, "%H:%M"),
+    # Creates a new column that retains the month of the invoice
+    InvoiceMonth = as.character(month(FullInvoiceDate, label = TRUE, abbr = FALSE)),
+    # Creates a new column that retains the day of the invoice
+    InvoiceDay = day(FullInvoiceDate),
+    # Creates a new column that retains the year of the invoice
+    InvoiceYear = as.character(year(FullInvoiceDate)),
+    # Creates a new column that calculates the total sale value
+    TotalSale = Quantity * UnitPrice,
+    # Creates a new column that determines the exact day of the week a purchase was made
+    Weekday = weekdays(InvoiceDate),
+    # Creates a new column that determines the exact hour of the day a purchase was made
+    InvoiceHour = format(InvoiceDate, "%H"),
+    QuantityTier = case_when(
+      Quantity > 0 & Quantity <=4 ~ "Low",
+      Quantity >=5 & Quantity <=20 ~ "Medium",
+      Quantity >=21 & Quantity <= 60 ~ "High",
+      Quantity >60 ~ "Very High")
+  ) %>%
+  # This removes the now unnecessary InvoiceDate column which had both the full date and time within it
+  select(-InvoiceDate)
+
+
+cleaned_online_retail_data <- cleaned_online_retail_data %>% 
+  mutate(
+  Season = case_when(
+    (InvoiceMonth=="December" | InvoiceMonth=="January" | InvoiceMonth=="February") ~ "Winter",
+    (InvoiceMonth=="March" | InvoiceMonth=="April" | InvoiceMonth=="May") ~ "Spring",
+    (InvoiceMonth=="June" | InvoiceMonth=="July" | InvoiceMonth=="August") ~ "Summer",
+    (InvoiceMonth=="September" | InvoiceMonth=="October" | InvoiceMonth=="November") ~ "Fall"),
+  
+    SaleTier = case_when(
+      TotalSale <= 5 ~ "Very Low",
+      TotalSale > 5 & TotalSale <= 20 ~ "Low",
+      TotalSale > 20 & TotalSale <= 100 ~ "Medium",
+      TotalSale > 100 & TotalSale <= 500 ~ "High",
+      TotalSale > 500 ~ "Very High"
+    ))
+
+cleaned_online_retail_data <- cleaned_online_retail_data %>%
+  mutate(
+    SaleTier = case_when(
+      TotalSale <= 5 ~ "Very Low",
+      TotalSale > 5 & TotalSale <= 20 ~ "Low",
+      TotalSale > 20 & TotalSale <= 100 ~ "Medium",
+      TotalSale > 100 & TotalSale <= 500 ~ "High",
+      TotalSale > 500 ~ "Very High"
+    )
+  )
+
+cleaned_online_retail_data <- cleaned_online_retail_data %>%
+  mutate(
+    PriceTier = case_when(
+      UnitPrice <= 1 ~ "Very Low",
+      UnitPrice > 1 & UnitPrice <= 5 ~ "Low",
+      UnitPrice > 5 & UnitPrice <= 20 ~ "Medium",
+      UnitPrice > 20 & UnitPrice <= 100 ~ "High",
+      UnitPrice > 100 ~ "Very High"
+    )
+  )
+
+cleaned_online_retail_data <- cleaned_online_retail_data %>%
+  group_by(InvoiceNo) %>%
+  mutate(TotalItemsPerOrder = sum(Quantity)) %>%
+  ungroup()
+
+cleaned_online_retail_data <- cleaned_online_retail_data %>%
+  group_by(CustomerID) %>%
+  mutate(RepeatCustomer = n_distinct(InvoiceNo) > 1) %>%
+  ungroup()
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# THIS IS THE CANCELED REPORTS CODE THAT WILL BE HIDDEN FROM THE FINAL REPORT 
+
+# This code block below mutates the cleaned data by adding additional columns and removing unnecessary ones
+refunded_orders <- refunded_orders %>%
+  filter(!(Description %in% c("Manual", "POSTAGE", "Discount"))) %>%
+  # This removes the index column which is superfluous to our analysis
+  select(-index) %>%
+  mutate(
+    # Creates a new column that retains the month, day, and year of the invoice
+    FullInvoiceDate = as.Date(InvoiceDate),
+    # Creates a new column that retains the time of the invoice
+    InvoiceTime = format(InvoiceDate, "%H:%M"),
+    # Creates a new column that retains the month of the invoice
+    InvoiceMonth = as.character(month(FullInvoiceDate, label = TRUE, abbr = FALSE)),
+    # Creates a new column that retains the day of the invoice
+    InvoiceDay = day(FullInvoiceDate),
+    # Creates a new column that retains the year of the invoice
+    InvoiceYear = as.character(year(FullInvoiceDate)),
+    # Creates a new column that calculates the total sale value
+  )
+
+#This code block adds additional columns lik
+refunded_orders <- refunded_orders %>%
+  mutate(
+    TotalSale = Quantity * UnitPrice,
+    # Creates a new column that determines the exact day of the week a purchase was made
+    Weekday = weekdays(refunded_orders$InvoiceDate),
+    # Creates a new column that determines the exact hour of the day a purchase was made
+    InvoiceHour = format(refunded_orders$InvoiceDate, "%H"),
+    # Creates a new column that determines what season the purchase was made (Winter, Spring, Summer, or Fall)
+    Season = case_when(
+      (InvoiceMonth=="December" | InvoiceMonth=="January" | InvoiceMonth=="February") ~ "Winter",
+      (InvoiceMonth=="March" | InvoiceMonth=="April" | InvoiceMonth=="May") ~ "Spring",
+      (InvoiceMonth=="June" | InvoiceMonth=="July" | InvoiceMonth=="August") ~ "Summer",
+      (InvoiceMonth=="September" | InvoiceMonth=="October" | InvoiceMonth=="November") ~ "Fall"),
+    # Creates a new column indicating if the quantity of a purchase is "Low", "Medium", "High", or "Very High" (see below for reasoning)
+    QuantityTier = case_when(
+      Quantity > 0 & Quantity <=4 ~ "Low",
+      Quantity >=5 & Quantity <=20 ~ "Medium",
+      Quantity >=21 & Quantity <= 60 ~ "High",
+      Quantity >60 ~ "Very High"),
+    PriceTier = case_when(
+      UnitPrice < 1 ~ "Very Low",
+      UnitPrice >= 1 & UnitPrice < 5 ~ "Low",
+      UnitPrice >= 5 & UnitPrice < 20 ~ "Medium",
+      UnitPrice >= 20 & UnitPrice < 100 ~ "High",
+      UnitPrice >= 100 ~ "Very High"
+    ),
+    SaleTier = case_when(
+      TotalSale >= -5 ~ "Very Low",
+      TotalSale < -5 & TotalSale >= -20 ~ "Low",
+      TotalSale < -20 & TotalSale >= -100 ~ "Medium",
+      TotalSale < -100 & TotalSale >= -500 ~ "High",
+      TotalSale < -500 ~ "Very High"
+    )
+  )%>%
+  # This removes the now unnecessary InvoiceDate column which had both the date and time within it
+  select(-InvoiceDate)
+
+refunded_orders <- refunded_orders %>%
+  group_by(InvoiceNo) %>%
+  mutate(TotalItemsPerOrder = sum(Quantity)) %>%
+  ungroup()
+
+
+refunded_orders <- refunded_orders %>%
+  group_by(CustomerID) %>%
+  mutate(RepeatCustomer = n_distinct(InvoiceNo) > 1) %>%
+  ungroup()
+```
+
+*Note: The "InvoiceDate" column was the column that existed by default in the data set which contained by the calendar date (mm:dd:yy), but also the time. "FullInvoiceDate" only includes the calendar date*
+
+With these additional columns, a more specific and useful analysis can be made. For example, we can track product purchases in multiple months, what time of day orders frequently come in, what days of the week orders come, and can see what best selling products there are based upon their sale price.
+
+Combined with the ability to track purchases in different countries, this becomes even more powerful as we can breakdown sales in a variety of countries enabling a wide set of possibilities for analysis and figuring out effective solutions for stocking centers in certain countries. Combined with other new variables like QuantityTier, PriceTier, SaleTier, and Season, warehouses can be properly aware of impeding inventory shifts caused by a decrease or increase in shopping throughout the year.
+
+Before I move on, I want to clarify these labelings:
+
+**QuantityTier:**
+
+* Purchases with quantities ranging from 1-4 indicates a "low" quantity sale
+* Purchases with quantities ranging from 5-20 indicates a "medium" quantity sale
+* Purchases with quantities ranging from 21-60 indicates a "high" quantity sale
+* Purchases with quantities that are greater than 60 indicate a "very high" quantity sale
+
+These quantity tier boundaries were determined using exploratory analysis in the preparation phase, where the median purchase quantity was 6 and the mean was around 13. These boundaries allow us to distinguish between small, moderate, and large, and very large purchases.
+
+**Season:**
+
+* December, January, and February fall under the "Winter" season label
+* March, April, and May fall under the "Spring" season label
+* June, July, and August fall under the "Summer" season label
+* September, October, and November fall under the "Fall" season label
+
+All other labelings are straightforward and do not require explanation.
+
+To finish off the mutations, I decided to add two new columns TotalItemsPerOrder and RepeatCustomer. The names are self-explanatory enough but essentially they indicate how many items are in a given order and whether a certain customer has shopped at the store repeatedly.
+
+```{r}
+
+cleaned_online_retail_data <- cleaned_online_retail_data %>%
+  group_by(InvoiceNo) %>%
+  mutate(TotalItemsPerOrder = sum(Quantity)) %>%
+  ungroup()
+
+
+cleaned_online_retail_data <- cleaned_online_retail_data %>%
+  group_by(CustomerID) %>%
+  mutate(RepeatCustomer = n_distinct(InvoiceNo) > 1) %>%
+  ungroup()
+```
+
+This code here adds these columns to the data set and will be shown (along with all the other added columns) at the end of this section.
+
+### Final Organization of the Data
+
+To ensure a more readible and clean data set look, I decided to fully reorganize the columns so that certain related values would be near each other (e.g. InvoiceDate and InvoiceNo will be grouped and Quantity and QuantityTier will be grouped together).
+
+```{r}
+# This rearranges the columns created with this top-to-bottom order of the columns being reflective of the data as it will appear from left-to-right when viewed
+cleaned_online_retail_data <- cleaned_online_retail_data %>%
+  select(
+    InvoiceNo,
+    StockCode,
+    Description,
+    UnitPrice,
+    Quantity,
+    TotalSale,
+    PriceTier,
+    QuantityTier,
+    SaleTier,
+    TotalItemsPerOrder,
+    CustomerID,
+    Country,
+    InvoiceDay,
+    InvoiceMonth,
+    InvoiceYear,
+    Weekday,
+    InvoiceHour,
+    Season,
+    RepeatCustomer,
+    -FullInvoiceDate
+  )
+# Displays the new arrangement of columns
+head(cleaned_online_retail_data)
+ncol(cleaned_online_retail_data)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+refunded_orders <- refunded_orders %>%
+  select(
+    InvoiceNo,
+    StockCode,
+    Description,
+    UnitPrice,
+    Quantity,
+    TotalSale,
+    PriceTier,
+    QuantityTier,
+    SaleTier,
+    TotalItemsPerOrder,
+    CustomerID,
+    Country,
+    InvoiceYear,
+    InvoiceMonth,
+    InvoiceDay,
+    Weekday,
+    InvoiceHour,
+    Season,
+    RepeatCustomer,
+    -FullInvoiceDate
+  )
+
+```
+
+
+Another useful tool to use here is creating factors for some of our recent columns such as Season, Weekday, and others.
+
+```{r}
+# Creates a proper ordering for the quantity tiers (lowest to highest)
+cleaned_online_retail_data$QuantityTier <- factor(
+  cleaned_online_retail_data$QuantityTier,
+  levels = c("Low", "Medium", "High", "Very High")
+)
+
+# Creates a proper ordering for the seasons of the year
+cleaned_online_retail_data$Season <- factor(
+  cleaned_online_retail_data$Season,
+  levels = c("Winter", "Spring", "Summer", "Fall")
+)
+
+# Creates a proper ordering for the days of the week
+cleaned_online_retail_data$Weekday <- factor(
+  cleaned_online_retail_data$Weekday,
+  levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+)
+
+# Creates a proper ordering for the months of the year
+cleaned_online_retail_data$InvoiceMonth <- factor(
+  cleaned_online_retail_data$InvoiceMonth,
+  levels = c("December", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November")
+)
+
+
+# Creates a proper ordering for the months of the year
+cleaned_online_retail_data$SaleTier <- factor(
+  cleaned_online_retail_data$SaleTier,
+  levels = c("Very Low", "Low", "Medium", "High", "Very High")
+)
+
+# Creates a proper ordering for the months of the year
+cleaned_online_retail_data$PriceTier <- factor(
+  cleaned_online_retail_data$PriceTier,
+  levels = c("Very Low", "Low", "Medium", "High", "Very High")
+)
+
+cleaned_online_retail_data$QuantityTier <- factor(
+  cleaned_online_retail_data$QuantityTier,
+  levels = c("Low", "Medium", "High", "Very High")
+)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+# Creates a proper ordering for the quantity tiers (lowest to highest)
+refunded_orders$QuantityTier <- factor(
+  refunded_orders$QuantityTier,
+  levels = c("Low", "Medium", "High", "Very High")
+)
+
+# Creates a proper ordering for the seasons of the year
+refunded_orders$Season <- factor(
+  refunded_orders$Season,
+  levels = c("Winter", "Spring", "Summer", "Fall")
+)
+
+# Creates a proper ordering for the days of the week
+refunded_orders$Weekday <- factor(
+  refunded_orders$Weekday,
+  levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+)
+
+# Creates a proper ordering for the months of the year
+refunded_orders$InvoiceMonth <- factor(
+  refunded_orders$InvoiceMonth,
+  levels = c("December", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October",    "November")
+)
+
+```
+
+These factors allow the data to be grouped properly when creating graphs or summaries.
+
+The final step before going to fully analyze the two files is to make sure no duplicate entries are found.
+
+```{r}
+retail_data <- read.csv("final_cleaned_retail_data_real_backup.csv")
+refunded_data <- read.csv("final_cleaned_refunded_orders_data_backup.csv")
+
+retail_duplicates <- retail_data[duplicated(retail_data), ] # Creates a new data set consisting of duplicate entries
+refunded_duplicates <- refunded_data[duplicated(refunded_data), ] # Creates a new data set consisting of duplicate entries
+
+nrow(retail_duplicates)  # Count how many exact duplicates are in the base online order data set
+nrow(refunded_duplicates) # Count how many exact duplicates in the refunded orders data set
+
+cleaned_online_retail_data <- read.csv("final_cleaned_retail_data.csv") # Resets data in R to version cleaned of duplicates
+refunded_orders <- read.csv("final_cleaned_refunded_orders_data.csv") # Resets data in R to version cleaned of duplicates
+
+refunded_orders <- refunded_orders %>%
+  filter(!(Description %in% c("Manual", "POSTAGE", "Discount"))) 
+
+cleaned_online_retail_data <- cleaned_online_retail_data %>%
+  filter(!(Description %in% c("Manual", "POSTAGE"))) 
+```
+
+Now that I had found the amount of duplicate columns, I decided to open these files in Microsoft Excel and utilize the "Remove Duplicates" feature which perfectly removed the exact same number of rows as were in these duplicated data sets. Alongside this, I changed some of the country names such as "Channel Islands" to the "United Kingdom" since they are a dependency of the country. One country, EIRE, was renamed to Ireland for easier identification. After that, I used the version I created in Excel and remapped the cleaned_online_retail_data and the refunded_orders variables to it.
+
+*Note: The refund data set has undergone the same code above and will be inspected later on in this report*
+
+#### Overview of the Process Section
+
+* Deficiencies noted in the preparation section have been fixed
+* New useful columns have been created (e.g., QuantityTier, Season, RepeatCustomer)
+* The data has been completely reorganized to improve readibility
+* Thorough reasoning was given for the additions that were made
+* A separate refunded orders data set was created
+
+Below, we will go into a proper analysis of the data using the data set that we have cleaned up to this point.
+
+## Analysis of the Data
+
+With the cleaning of the data complete, we can finally move on to actually analyzing the data and being able to gather some useful insights.
+```{r echo=FALSE, message=FALSE}
+cleaned_online_retail_data_final <- cleaned_online_retail_data %>%
+  filter(!(Description %in% c("PAPER CRAFT , LITTLE BIRDIE", "MEDIUM CERAMIC TOP STORAGE JAR"))) 
+```
+
+```{r echo=FALSE}
+con <- dbConnect(SQLite(), ":memory:")
+copy_to(con, cleaned_online_retail_data, "cleaned_online_retail_data", temporary = FALSE)
+copy_to(con, refunded_orders, "refunded_orders", temporary = FALSE)
+copy_to(con, cleaned_online_retail_data_final, "cleaned_online_retail_data_final", temporary = FALSE)
+```
+
+To start with, it is best that we are introduced to what the data looks like generally: the sales per month, per season, and the top countries by sale and volume.
+
+To get a good overview of the sales, it is best that we first look at the sales across time to see when sales are concentrated in this dataset.
+
+Before we advance though, it most be noted that there are two products that we will find below that have an extremely high return rate (with one having one of 100% and another of 96%). These products will not be considered for these upcoming sections with more details on these products being provided below in the Refunded Orders section.
+
+### Sales Across Time
+
+One of the most important (if not the most important) consideration for understanding how to optimize inventory in a given year is looking at purchases throughout given times of the year. This can be by season, month, and even days of a month to see where spikes in purchases happen allowing a better understanding of when inventory should be highly stocked or stocked more minimally.
+
+We will begin with a broad view starting with going by season but will get narrower as we proceed through this section.
+
+##### Purchases by Season
+
+```{r}
+seasonal_quantity_purchases <- cleaned_online_retail_data_final %>%
+  group_by(Season) %>%
+  summarise(TotalQuantity = sum(Quantity, na.rm = TRUE)) %>%
+  mutate(Percentage = round(100 * TotalQuantity / sum(TotalQuantity), 1),
+         Label = paste0(Season, "\n", Percentage, "%"))
+
+seasonal_quantity_purchases$Season <- factor(seasonal_quantity_purchases$Season, levels = c("Winter", "Spring", "Summer", "Fall"))
+
+
+# Plot as pie chart
+ggplot(seasonal_quantity_purchases, aes(x = "", y = TotalQuantity, fill = Season)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5)) +
+  labs(title = "Seasonal Sales Distribution") +
+  theme_void() +
+  scale_fill_brewer(palette = "Set3")
+```
+
+Above, we can see two pie charts for quantity of purchases and total sales per season with those numbers being relatively close (with the biggest difference being 0.4% between summer sales and summer quantity purchases).
+
+
+##### Sales by Month
+
+```{r}
+monthly_sales <- dbGetQuery(con, '
+            SELECT 
+              InvoiceMonth,
+              ROUND(SUM(TotalSale), 2) AS TotalSales,
+              SUM(Quantity) AS TotalQuantity
+              FROM cleaned_online_retail_data_final
+              WHERE NOT (InvoiceYear = "2011" AND InvoiceMonth = "December" AND InvoiceDay >= 1)
+              GROUP BY InvoiceMonth
+              ORDER BY TotalSales DESC;')
+monthly_sales
+```
+
+This SQL query is able to calculate the total sales and amount of products sold for each month of the year. Importantly, this query excludes the data from December 2011 which is incomplete. This query paints an effective picture of where sales throughout the year are highest.
+
+With that query complete, the data can now be exported to a table and plotted in R.
+
+```{r}
+# The months are factored into chronological order
+monthly_sales$InvoiceMonth <- factor(monthly_sales$InvoiceMonth, levels = c("December", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November"))
+# This plots the data onto a graph that demonstrates total sales per month
+ggplot(monthly_sales, aes(x = InvoiceMonth, y = TotalSales)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  labs(
+    title = "Total Sales per Month (December 2010-November 2011)",
+    x = "Month",
+    y = "Total Sales (£)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# This plots the data on a graph that demonstrates total quantity sales per month
+ggplot(monthly_sales, aes(x = InvoiceMonth, y = TotalQuantity)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  labs(
+    title = "Total Quantity Purchases per Month (December 2010-November 2011)",
+    x = "Month",
+    y = "Total Sales (£)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+   scale_y_continuous(
+    limits = c(0, 700000),
+    breaks = seq(0, 700000, by = 100000),
+    labels = scales::comma
+  )
+```
+
+This data here displays the data in chronological order from December 2010 to November 2011. As mentioned earlier in this report, December 2011 is not complete and will therefore not be shown in analyses of this sort.
+
+To add a little more insight, we will also include a chart indicating when high-value orders are being made throughout the year.
+
+```{r}
+avg_sale_data <- cleaned_online_retail_data_final %>%
+  group_by(InvoiceMonth) %>%
+  summarise(
+    AvgSalePerItem = ifelse(sum(Quantity) == 0, NA, sum(TotalSale) / sum(Quantity))
+  )
+
+avg_sale_data$InvoiceMonth <- factor(avg_sale_data$InvoiceMonth, levels = c("December", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November"))
+
+ggplot(avg_sale_data, aes(x = InvoiceMonth, y = AvgSalePerItem)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  labs(
+    title = "Average Sale Per Order by Month (December 2010-November 2011)",
+    x = "Month",
+    y = "Total Sales (£)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+##### Sales by weekday & hour
+
+Here we will see purchase patterns consolidated through all throughout the year to distinguish specific patterns.
+
+```{r}
+
+# Constructs a summary of data based off of the total sales every hour in every day of the week
+heatmap_data <- cleaned_online_retail_data_final %>%
+  group_by(Weekday, InvoiceHour) %>%
+  summarise(
+    TotalSales = sum(TotalSale),
+    TotalQuantity = sum(Quantity)
+    ) %>%
+  ungroup()
+
+heatmap_data$Weekday <- factor(heatmap_data$Weekday, levels=c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Sunday"))
+
+# Produces the heat map based off of the summary of data above for total sales
+sales_heatmap <- ggplot(heatmap_data, aes(x = Weekday, y = InvoiceHour, fill = TotalSales)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", labels=comma) +
+  labs(title = "Sales Heatmap by Weekday and Hour",
+       x = "Day of Week",
+       y = "Hour of Day") +
+  theme_minimal()
+
+# Produces the heat map based off of the summary of data above for quantity
+quantity_heatmap <- ggplot(heatmap_data, aes(x = Weekday, y = InvoiceHour, fill = TotalQuantity)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", labels=comma) +
+  labs(title = "Quantity Heatmap by Weekday and Hour",
+       x = "Day of Week",
+       y = "Hour of Day") +
+  theme_minimal() 
+
+sales_heatmap
+quantity_heatmap
+```
+
+*Remember that no sales are ever recorded on a Saturday in the original data set*
+
+This data here is pretty interesting. We can see that throughout most of days of the week through the year, large quantity sales and large price sales are concentrated from about 10 am to 3 pm most days of the week, with special concentration on Tuesday through Thursday, although Monday and Friday offer significant sales as well. Sunday seems to be the least busy day and indicates a more calm day of shopping in which inventory can restock even further after having done so on Saturday.
+
+These graphs can be further enhanced by a new heat map indicating what days and times high value goods are being bought and when lower value goods are being bought. It is very possible to have combinations of low priced goods and high quantities, high priced goods and low quantities, or anything else in between.
+
+```{r}
+avg_sale_heatmap_data <- cleaned_online_retail_data_final %>%
+  group_by(Weekday, InvoiceHour) %>%
+  summarise(
+    TotalSales = sum(TotalSale),
+    TotalQuantity = sum(Quantity),
+    AvgSalePerItem = ifelse(sum(Quantity) == 0, NA, sum(TotalSale) / sum(Quantity))
+  )
+
+avg_sale_heatmap_data$Weekday <- factor(avg_sale_heatmap_data$Weekday, levels=c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+
+avg_sales_heatmap <- ggplot(avg_sale_heatmap_data, aes(x = Weekday, y = as.numeric(InvoiceHour), fill = AvgSalePerItem)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", na.value = "white") +
+  scale_y_continuous(breaks = seq(6, 20, by = 1)) +
+  labs(
+    title = "Average Sale Value per Item by Weekday and Hour",
+    x = "Day of Week",
+    y = "Hour of Day",
+    fill = "Avg £ per Item"
+  ) +
+  theme_minimal()
+
+avg_sales_heatmap
+```
+
+This heat map helps us see that most goods bought during the week tend to be fairly low, even during times of high concentrations of purchases. There are some notable outliers, specifically on Wednesday evening and Thursday morning, with some higher priced goods being about on Friday night. This indicates that there may need to be some special priority at these times for goods throughout the year.
+
+Here is a consolidated view of all the heat maps all broken up by month to see differences in each one.
+
+```{r}
+
+consolidated_heatmap_data_months <- cleaned_online_retail_data_final %>%
+  group_by(Weekday, InvoiceHour, InvoiceMonth) %>%
+  summarise(
+    TotalSales = sum(TotalSale),
+    TotalQuantity = sum(Quantity),
+    AvgSalePerItem = ifelse(sum(Quantity) == 0, NA, sum(TotalSale) / sum(Quantity))
+  )
+
+consolidated_heatmap_data_months$InvoiceMonth <- factor(consolidated_heatmap_data_months$InvoiceMonth, levels = c("December", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November"))
+
+
+ggplot(consolidated_heatmap_data_months, aes(x = Weekday, y = InvoiceHour, fill = AvgSalePerItem)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", labels=comma) +
+  labs(title = "Average Sale Per Item Heatmap by Weekday and Hour",
+       x = "Day of Week",
+       y = "Hour of Day") +
+  theme_minimal() + facet_wrap(~InvoiceMonth) + 
+  theme(
+    strip.text = element_text(size = 10),  # Facet strip label size
+    axis.text.x = element_text(angle = 90, vjust=0.2),  # Rotate x labels
+    axis.text.y = element_text(size=5, face="bold")
+  )
+
+ggplot(consolidated_heatmap_data_months, aes(x = Weekday, y = InvoiceHour, fill = TotalQuantity)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", labels=comma) +
+  labs(title = "Quantity Sold Heatmap by Weekday and Hour",
+       x = "Day of Week",
+       y = "Hour of Day") +
+  theme_minimal() + facet_wrap(~InvoiceMonth) + 
+  theme(
+    strip.text = element_text(size = 10),  # Facet strip label size
+    axis.text.x = element_text(angle = 90, vjust=0.2),  # Rotate x labels
+    axis.text.y = element_text(size=5, face="bold")
+  )
+
+ggplot(consolidated_heatmap_data_months, aes(x = Weekday, y = InvoiceHour, fill = TotalSales)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", labels=comma) +
+  labs(title = "Sales Heatmap by Weekday and Hour",
+       x = "Day of Week" ,
+       y = "Hour of Day") +
+  theme_minimal() + facet_wrap(~InvoiceMonth) + 
+  theme(
+    strip.text = element_text(size = 10),  # Facet strip label size
+    axis.text.x = element_text(angle = 90, vjust=0.2),  # Rotate x labels
+    axis.text.y = element_text(size=5, face="bold")
+  )
+
+
+```
+
+Below, I will provide some interpretations for each of these charts.
+
+##### Average Sale Per Item Heat map
+
+In general, this graph has pretty low average sales throughout the year on each day. The only exceptions are in June, August, September, and October where on certain days there is a high percentage of high value goods bought during certain days and hours. In terms of hours, they seem to be isolated to the morning or later in the day (e.g. 7 am on Mondays in September, and 6 pm on Fridays in October). These may indicate some mass bulk sales for stores as they prepare for the holiday season. During the summer, specifically in June and August, we also see a pattern of some high value goods bought during the month such as at 4 pm on Fridays in June and 7 pm on Wednesdays in August. These extremes may indicate that certain bulk shopping is done during very late or early times in the day, giving inventory teams during the middle of the day time to prepare for these purchases whether it be the night before or the morning/afternoon before. 
+
+Due to these purchases having a high average sale, they should be given great care.
+
+##### Quantity Sold Heat map
+
+As can be seen for most of the year, quantities throughout the days of the weak tend to stay relatively constant with February through August heaving ranges of 20,000 quantity orders per hour and then up to 50,000 at some points. In September-December and even in January, there seem to be large quantities of purchases being made, with those orders being clustered in the middle of the day (10 am to 4 pm) with quantities increasing to a greater range that includes quantity above 60,000. This large purchase quantity reflects the need for increased staffing for inventory warehouses and increased focus on supply as these large amounts of purchases reflect an increase in demand that must be compensated by careful management decision making.
+
+##### Sales Heat map
+
+This heat map looks strikingly similar to the quantity sold heat map we just looked at before. For this case, we can see a similarly calm February through August sales season with sales increasing in September, October, November, with December and January following this pattern as well.
+
+This gives even more importance to the conclusions made above for the quantity sold heat map, reflecting the increased need for inventory to be ready for a massive influx in demand, and also importance in purchases, during these select months.
+
+##### Repeat Customers Throughout the Year
+
+One last important consideration to looking at this time data is what times of year repeat customers are buying products. As we will see below, repeat customers make a critical component of the sales for the business.
+
+```{r}
+repeat_customer_trends <- cleaned_online_retail_data_final %>%
+  group_by(RepeatCustomer) %>%
+  summarise(
+    TotalOrders = n()
+  ) %>%
+  mutate(
+    PercentOrders = TotalOrders / sum(TotalOrders) * 100,
+    Label = paste0(round(PercentOrders, 1), "%")
+  )
+
+repeat_customer_trends$RepeatCustomer <- factor(repeat_customer_trends$RepeatCustomer, levels=c(TRUE, FALSE))
+
+ggplot(repeat_customer_trends, aes(x = "", y = PercentOrders, fill = RepeatCustomer)) +
+  geom_bar(width = 1, stat = "identity", color = "white") +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5), color = "white", size = 5) +
+  scale_fill_manual(values = c("TRUE" = "darkblue", "FALSE" = "lightblue")) +
+  labs(
+    title = "Percentage of Orders Made by Repeat Customers",
+    fill = "Repeat Customer"
+  ) +
+  theme_void()
+```
+
+As can be seen, 91.6% of orders were made by repeat customers throughout the time of data recorded, indicating a vast majority of customers are repeats.
+
+With that set in stone, we can break down how much repeat customer sales make up monthly sales.
+
+```{r}
+monthly_repeat_rate <- cleaned_online_retail_data_final %>%
+  group_by(InvoiceMonth) %>%
+  summarise(
+    TotalOrders = n(),
+    RepeatOrders = sum(RepeatCustomer == TRUE),
+    RepeatCustomerRate = RepeatOrders / TotalOrders
+  ) %>%
+  arrange(desc(RepeatCustomerRate))
+
+monthly_repeat_rate$InvoiceMonth <- factor(monthly_repeat_rate$InvoiceMonth, levels=c("December", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November"))
+
+ggplot(data = monthly_repeat_rate, aes(x = InvoiceMonth, y = RepeatCustomerRate, group = 1)) +
+  geom_line(color = "royalblue", size = 1.2) +
+  geom_point(color = "darkblue", size = 2) +
+  labs(
+    title = "Repeat Customer Rates by Month",
+    x = "Month",
+    y = "Repeat Customer Orders Percentage"
+  ) +
+  theme_minimal()
+```
+Throughout most of the year, the amount of purchases a month have at least 90% of purchases made by repeat customers. This percentage starts declining in June and finally reaches its minimum in October when about 88% purchases are made by repeat customers in that month. The number rises to ~89%, but still below the 90% seen through most of the year. This reflects a sudden peak in new outside purchases in the months of October, November, and December. This coincides with the large increase in purchases during this time of year that we saw above.
+
+##### Total Items Per Order over Time
+
+One of the most useful ways to find out when inventory is being overwhelmed by a number of purchases is figuring out when bulk orders are being made. Below, we will see what time of year bulk orders are being made as well as what times of the week they are being made.
+
+To begin with, let's just see what the average sized order is throughout the year by month.
+
+```{r}
+average_sized_orders_month <- dbGetQuery(con, '
+                 SELECT 
+                    InvoiceMonth,
+                    AVG(TotalItemsPerOrder) AS AverageItemPerOrder
+                 FROM cleaned_online_retail_data_final
+                 WHERE NOT (InvoiceYear = "2011" AND InvoiceMonth = "December" AND InvoiceDay >= 1)
+                 GROUP BY InvoiceMonth
+                 ORDER BY AverageItemPerOrder DESC;')
+
+
+average_sized_orders_month$InvoiceMonth <- factor(
+  average_sized_orders_month$InvoiceMonth,
+  levels = c("December", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October",    "November")
+)
+
+ggplot(data=average_sized_orders_month, aes(x=InvoiceMonth, y=AverageItemPerOrder, group=1)) +
+  geom_line(size = 1.2, color = "darkblue") +
+  labs(
+    title = "Average Items Per Order by Month (December 2010-November 2011)",
+    x = "Month",
+    y = "Total Amount of Items"
+  ) +
+  theme_minimal() 
+```
+The average items per order seem to remain between a range of 350-450 until August when it spikes to over 600, indicating an increase in high-quantity purchases. In the ensuing two months, that number drops but is still higher than it had been earlier in the year. This influx in purchases is likely due to preparation by businesses for the upcoming fall sales hike before the major holidays, which we were also able to see in this data set.
+
+Thus, the latter months of the year seem to be critical for optimal inventory optimization to ensure that these high quantity, high value purchases are made. For other parts of the year, especially in the early first four months, there are far fewer large orders compared to the latter parts of the year. This indicates a lower stakes of the earlier parts of the year as it relates to stocking matters.
+
+##### Conclusion to Sales over Time
+
+Now that the important metrics have been tracked throughout the year, we can move on to utilizing sales from different countries, combined with the findings made here, to make an even deeper analysis.
+
+## Country Sales
+
+An important problem in inventory management for a company selling goods to a variety of countries is managing inventory for a variety of different countries throughout the world. One of the ways that can inform better decision making on this task is by figuring out which countries are primarily responsible for the most amount of purchase volume.
+
+The following code below is a SQL query which will indicate the top 10 countries in terms of sales and quantity out of the 38 total.
+
+*Note that we are excluding "countries" that are not specifically defined such as "Unspecified" and "European Community"*
+
+```{r}
+top_countries_sale <- dbGetQuery(con, 'SELECT 
+                    Country,
+                    ROUND(SUM(TotalSale), 2) AS TotalSales
+                 FROM cleaned_online_retail_data_final
+                 WHERE Country NOT IN ("Unspecified", "European Community")
+                 GROUP BY Country
+                 ORDER BY TotalSales DESC
+                 LIMIT 10;')
+```
+
+In this summary here, we can see that the United Kingdom is by far the greatest marketplace for sales by a significant margin. Following the United Kingdom, the Netherlands, Ireland, Germany, and France make up the top five. Most of the other countries in the top 10, besides Australia, are European countries, which is an important consideration for when we are looking at distribution center locations. This indicates that business is primarily concentrated in Europe, making logistical problems a lot simpler to deal with.
+
+Below, I will indicate the top countries by quantity too, with some slight shifts in terms of country ranking compared to the total sales query above.
+
+```{r}
+top_countries_quantity <- dbGetQuery(con, 'SELECT 
+                    Country,
+                    SUM(Quantity) AS TotalQuantity
+                 FROM cleaned_online_retail_data_final
+                 WHERE Country NOT IN ("Unspecified", "European Community")
+                 GROUP BY Country
+                 ORDER BY TotalQuantity DESC
+                 LIMIT 10;')
+```
+
+Here, we can see Belgium being dropped from the top 10 and being replaced by Japan. In terms of large quantity countries, 80% are located in Europe. This is a slight but noticeable shift that informs the company of the geographic range of purchases.
+
+Useful graphics are provided below to make for better viewing and understanding of the above queries.
+```{r}
+ggplot(top_countries_sale, aes(x = reorder(Country, -TotalSales), y = TotalSales)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Top 10 Countries by Total Sales", x = "Country", y = "Total Sales (£)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+   scale_y_continuous(
+    limits = c(0, 8000000),
+    breaks = seq(0, 8000000, by = 1000000),
+    labels = scales::comma
+  )
+
+ggplot(top_countries_quantity, aes(x = reorder(Country, -TotalQuantity), y = TotalQuantity)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Top 10 Countries by Total Quantity Sold", x = "Country", y = "Total Quantity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+   scale_y_continuous(
+    limits = c(0, 4500000),
+    breaks = seq(0, 4500000, by = 500000),
+    labels = scales::comma
+  )
+```
+
+This is all useful information, but to get more in-depth information we can use the TotalSale and Quantity column (as well as producing an average sale per item like before) to get more information about the exact nature of these country's markets.
+
+Below, we will use SQL to get a full idea of these useful statistics for every country (in alphabetical order)
+
+```{r}
+avg_sale_country <- dbGetQuery(con, 
+'  SELECT 
+    Country,
+    ROUND(SUM(TotalSale), 2) AS TotalSales,
+    SUM(Quantity) AS TotalQuantity,
+    ROUND(SUM(TotalSale)/ SUM(Quantity), 2) AS AvgSalePerItem
+  FROM cleaned_online_retail_data_final
+  WHERE Country NOT IN ("Unspecified", "European Community")
+  GROUP BY Country
+  ORDER BY Country;')
+```
+
+With this selection of data gathered, we can now create a graph demonstrating it in a more clear manner.
+
+```{r}
+# Convert Country to a factor so that the plot is ordered by AvgSalePerItem
+avg_sale_country$Country <- factor(avg_sale_country$Country, levels = avg_sale_country$Country[order(avg_sale_country$AvgSalePerItem)])
+
+# Plot
+ggplot(avg_sale_country, aes(x = Country, y = AvgSalePerItem)) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  coord_flip() +
+  labs(
+    title = "Average Sale per Item by Country",
+    x = "Country",
+    y = "Avg Sale per Item (£)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8))
+
+
+ggplot(avg_sale_country, aes(x = reorder(Country, -TotalQuantity), y = TotalQuantity)) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  coord_flip() +
+  labs(
+    title = "Total Quantity of Goods Sold by Country",
+    x = "Country",
+    y = "Total Quantity Per Country"
+  ) +
+  scale_y_continuous(
+    limits = c(0, 4500000),
+    breaks = seq(0, 4500000, by = 1000000),
+    labels = scales::comma
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8))
+```
+
+Interestingly, a lot of the countries that have high average sales per item rank very low in the overall quantity chart (as can be seen in the second chart). This implies that there are very specific, high value purchases made in foreign countries throughout a given year. This indicates that stocking for these countries should be kept low, but at a very high quality to ensure that they meet their expectations.
+
+Below, the United Kingdom will be removed from the quantity bar chart so that other countries can be seen more clearly.
+
+```{r}
+ggplot(avg_sale_country %>% filter(Country != "United Kingdom"), 
+       aes(x = reorder(Country, -TotalQuantity), y = TotalQuantity)) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  coord_flip() +
+  labs(
+    title = "Total Quantity of Goods Sold by Country",
+    x = "Country",
+    y = "Total Quantity Per Country"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8))
+```
+
+One last thing we can look at is what countries have the highest percentage of "repeat customers" (customers who have made more than one purchase). This will allow the company to identify key markets for consumers who expect the best of company and will continue supporting it.
+
+```{r}
+country_repeat_rates <- cleaned_online_retail_data_final %>%
+  filter(!Country %in% c("Unspecified", "European Community")) %>%
+  group_by(Country) %>%
+  summarise(
+    TotalOrders = n(),
+    RepeatOrders = sum(RepeatCustomer),
+    RepeatRate = RepeatOrders / TotalOrders
+  ) %>%
+  arrange(desc(RepeatRate))
+
+#### Creating pie chart
+# Calculate summary and percent
+country_repeat_summary <- country_repeat_rates %>%
+  mutate(Above50 = ifelse(RepeatRate > 0.5, "Above 50%", "50% or Below")) %>%
+  count(Above50) %>%
+  mutate(
+    Percent = n / sum(n),
+    Label = paste0(Above50, "\n", scales::percent(Percent, accuracy = 1))
+  )
+
+country_repeat_rates
+
+# Plot pie chart with percentage labels
+ggplot(country_repeat_summary, aes(x = "", y = n, fill = Above50)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5), size = 4) +
+  labs(title = "Countries by Repeat Customer Rate (> 50%)") +
+  theme_void() +
+  scale_fill_manual(values = c("Above 50%" = "darkgreen", "50% or Below" = "grey")) +
+  theme(legend.position = "none")
+
+ggplot(country_repeat_rates, aes(x = reorder(Country, RepeatRate), y = RepeatRate)) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  coord_flip() +
+  labs(
+    title = "Repeat Customer Rates by Country",
+    x = "Country",
+    y = "Repeat Customer Rate"
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_minimal()
+```
+
+As we can see, above, 76% of countries that have bought products from the store have a repeat customer rate greater than 50% indicating a vast amount of places that are frequent buyers. This implies the need to make sure stocking depots are kept up to date throughout the year for these countries.
+
+What's the most interesting here is that the countries with some of the lowest amounts of purchases make up the extremes of repeat customer rates in the table. As can be seen, countries like Singapore, Lithuania, Iceland, the Czech Republic, and others have a repeat customer rate of a perfect 100%. Meanwhile in the lower half, countries like the Republic of South Africa, Brazil, Bahrain, Saudi Arabia, and the United States have repeat rates that are far lower (with all of the ones I listed except for the United States having a repeat customer rate of 0%). Something relevant to that is the fact that these countries are all outside of Europe, which may indicate a lack of eagerness to purchase from a foreign firm based in the U.K.
+
+Overall, though, this still indicates the repeat customer base for the firm is very strong throughout most months of the year (and overall). This indicates a close relationship with customers that implies a high willingness of trust. This puts ever more weight on inventory operations as they figure out how to manage this.
+
+As can be seen, there are a lot of useful metrics we can derive out of using the country column. Up ahead, we are going to do a lot more  with it. Next, we will again be seeing the month and season columns and will eventually be combining the PriceTier, QuantityTier, and SaleTier columns (among others) to get more valuable analysis in the following two sections.
+
+## Product Sale Analysis
+
+Probably the most critical component of inventory management overall is focusing on what products are selling, how much revenue are they generating, what countries are they being sold in, and a whole host of other important considerations.
+
+To get a good understanding of what products are being sold the most, we will use SQL to generate a list of the top 15 most important products throughout the data set. 
+
+```{r}
+
+top_purchased_old <-dbGetQuery(con, 'SELECT 
+                  Description,
+                  PriceTier,
+                  ROUND(SUM(TotalSale), 2) AS SoldTotalSales,
+                  SUM(Quantity) AS SoldQty
+                 FROM cleaned_online_retail_data
+                 GROUP BY Description
+                 ORDER BY SoldTotalSales DESC
+                 LIMIT 15;')
+top_purchased_old
+
+top_purchased <-dbGetQuery(con, 'SELECT 
+                  Description,
+                  PriceTier,
+                  ROUND(SUM(TotalSale), 2) AS SoldTotalSales,
+                  SUM(Quantity) AS SoldQty
+                 FROM cleaned_online_retail_data_final
+                 GROUP BY Description
+                 ORDER BY SoldTotalSales DESC
+                 LIMIT 15;')
+top_purchased
+```
+
+As we can see, the top product (by both sales and quantity) is "PAPER CRAFT , LITTLE BIRDIE" but as we will see down below, that product (as well as another product, "MEDIUM CERMAIC TOP STORAGE JAR") have extremely high refund rates of 100% and 96% respectively. In the second tible, we can see the proper top product breakdown.
+
+This list helps us get an idea of some of the most important products, but we can utilize the different tier columns created earlier (PriceTier, SaleTier, and QuantityTier) to get additional insights about the products.
+
+#### Using PriceTier to Identify Top Sellers
+
+In the above SQL query, we used the PriceTier column to see what the correlation is between the different products and how much their unit price is. For a reminder of how the price tier is segmented, see the above processing section for more information.
+
+Below, we will create a pie chart to see what price tiers are the most common among these top 15 products.
+
+```{r}
+price_tier_summary <- top_purchased %>%
+  count(PriceTier) %>%
+  mutate(
+    Percentage = n / sum(n),
+    Label = paste0(scales::percent(Percentage, accuracy = 1))
+  )
+
+price_tier_summary
+
+ggplot(price_tier_summary, aes(x = "", y = n, fill = PriceTier)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5)) +
+  labs(
+    title = "Price Tier Distribution of Top 15 Products",
+    fill = "Price Tier"
+  ) +
+  theme_void() +
+  scale_fill_brewer(palette = "Set3")
+```
+As we can see above, the top 15 products overwhelmingly belong in the "Low" price tier, with 73% of products being indicated as such. This indicates that the unit prices for 73% of these top 15 products are greater than 1 pound and less than or equal to 5 pounds. Another 20% are medium (greater than 5 pounds and less than or equal to 20 pounds) and 7% being "Very High" (greater than 100 pounds).
+
+This indicates that the company should prioritize low-unit-priced products in favor of high-unit-priced products as they seem to constitute less of the company's top products. 
+
+To get a better understanding of if these low price tier products are being bought in any significant amount, we can look at the graph below which indicates what percentage of low price tier columns are being bought
+
+```{r}
+top15_data <- cleaned_online_retail_data_final %>%
+  semi_join(top_purchased, by = "Description") %>%
+  filter(!is.na(QuantityTier), !is.na(PriceTier))
+
+# Count QuantityTier distribution within each PriceTier
+top15_quantity_price_counts <- top15_data %>%
+  group_by(PriceTier, QuantityTier) %>%
+  summarise(Count = n()) %>%
+  group_by(PriceTier) %>%
+  mutate(Percent = Count / sum(Count),
+         Label = paste0(round(Percent * 100, 1), "%"))
+
+top15_quantity_price_counts$PriceTier <- factor(top15_quantity_price_counts$PriceTier, levels=c("Very Low", "Low", "Medium", "High", "Very High"))
+
+top15_quantity_price_counts$QuantityTier <- factor(top15_quantity_price_counts$QuantityTier, levels=c("Low", "Medium", "High", "Very High"))
+
+# Plot with labels
+ggplot(top15_quantity_price_counts, aes(x = PriceTier, y = Count, fill = QuantityTier)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5), color = "black", size = 3) +
+  labs(
+    title = "Quantity Tier Distribution within Price Tiers (Top 15 Products)",
+    x = "Price Tier",
+    y = "Count",
+    fill = "Quantity Tier"
+  ) +
+  theme_minimal()
+```
+
+Here, we can see that the "Low" price tier orders with these products have 36.2% of being in the "Low" quantity tier (1-4 products are purchased) but the majority of the "Low" price tier products have a quantity tier of above low meaning that 63.8% of these low value products are bought more than 4 at a time. This indicates that these products are bought in significant enough numbers to warrant even more focus on stocking up these low-value products.
+
+To further demonstrate the power of these low price tier products, we can use the SaleTier to see how profitable these purchases are.
+
+```{r}
+top15_sale_tier_summary <- cleaned_online_retail_data_final %>%
+  filter(Description %in% top_purchased$Description) %>%
+  count(SaleTier) %>%
+  mutate(Percentage = round(n / sum(n) * 100, 1))
+
+top15_sale_tier_summary$SaleTier <- factor(top15_sale_tier_summary$SaleTier, levels=c("Very Low", "Low", "Medium", "High", "Very High"))
+
+ggplot(top15_sale_tier_summary, aes(x = "", y = Percentage, fill = SaleTier)) +
+  geom_col(width = 1) +
+  coord_polar("y") +
+  geom_text(aes(label = paste0(Percentage, "%")), position = position_stack(vjust = 0.5), size=2.2) +
+  labs(title = "Sale Tier Distribution (Top 15 Products)") +
+  theme_void()
+```
+Above, we can see a majority of these products, 57.9% of them, are constituted as a sale worth more than 20 dollars. This again points to the overall financial significance of these purchases and how they must be prioritized in inventory stockings.
+
+#### Low Performing Products
+
+In the data set, there are also low performing products and it would be useful to see what indicates that they are and what the actual products are.
+
+```{r}
+bottom_purchased <-dbGetQuery(con, '
+                 SELECT 
+                  Description,
+                  PriceTier,
+                  ROUND(SUM(TotalSale), 2) AS SoldTotalSales,
+                  SUM(Quantity) AS SoldQty
+                 FROM cleaned_online_retail_data_final
+                 GROUP BY Description
+                 HAVING SoldQty < 50
+                 ORDER BY SoldQty')
+
+dbGetQuery(con, '
+SELECT COUNT(*) AS NumLowSellingProducts
+FROM (
+  SELECT 
+    Description,
+    SUM(Quantity) AS TotalQuantity
+  FROM cleaned_online_retail_data_final
+  GROUP BY Description
+  HAVING TotalQuantity < 50
+) AS low_sellers')
+
+dbGetQuery(con, '
+  SELECT COUNT(DISTINCT Description) AS NumLowSellingProducts
+  FROM cleaned_online_retail_data_final')
+```
+
+In the above code block, we can see that 922 products have sold less than 50 units, which constitutes about 23.8% of the total number of products (which is 3873). Below, we will go further into these poor performing products and being able to extract useful insights from them that will allow the company to properly identify what are true-bad performers and what may just be luxury products or seasonal products.
+
+```{r}
+price_tier_summary_bottom <- bottom_purchased %>%
+  count(PriceTier) %>%
+  mutate(
+    Percentage = n / sum(n),
+    Label = paste0(scales::percent(Percentage, accuracy = 1))
+  )
+
+price_tier_summary_bottom
+
+ggplot(price_tier_summary_bottom, aes(x = "", y = n, fill = PriceTier)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5)) +
+  labs(
+    title = "Price Tier Distribution of Poor Performing Products",
+    fill = "Price Tier"
+  ) +
+  theme_void() +
+  scale_fill_brewer(palette = "Set3")
+```
+Compared to the top performing products before, there seems to be an increase of diversity in the price tier of these products. 13% of these poor performing products are identified as very low, 58% as low, 27% as medium, 2% as high and a very small percentage as very high. 
+
+This points to "Low" price tier products making up a vast amount of the number of products, but also that lower performing products tend to be of slightly higher values than the top performing products.
+
+Below, we will see how these bottom performing products perform among repeat customers and will work on detecting if these are regional or seasonal products.
+
+```{r}
+low_perf_descriptions <- bottom_purchased$Description
+
+no_repeat_customer_count <- cleaned_online_retail_data_final %>%
+  filter(Description %in% low_perf_descriptions) %>%
+  group_by(Description) %>%
+  summarise(RepeatCustomerOrders = sum(RepeatCustomer == TRUE)) %>%
+  filter(RepeatCustomerOrders == 0) %>%
+  summarise(Count = n())
+
+no_repeat_customer_count
+
+top_purchased_922 <-dbGetQuery(con, 'SELECT 
+                  Description,
+                  PriceTier,
+                  ROUND(SUM(TotalSale), 2) AS SoldTotalSales,
+                  SUM(Quantity) AS SoldQty
+                 FROM cleaned_online_retail_data_final
+                 GROUP BY Description
+                 ORDER BY SoldTotalSales DESC
+                 LIMIT 922;')
+
+top_perf_descriptions <- top_purchased_922$Description
+
+no_repeat_customer_count_top <- cleaned_online_retail_data_final %>%
+  filter(Description %in% top_perf_descriptions) %>%
+  group_by(Description) %>%
+  summarise(RepeatCustomerOrders = sum(RepeatCustomer == TRUE)) %>%
+  filter(RepeatCustomerOrders == 0) %>%
+  summarise(Count = n())
+
+no_repeat_customer_count_top
+```
+
+In the above code section, we can see that 33 out of the 922 products sold have not been bought by a repeat customer whereas the mirror top 922 products have all been bought by a repeat customer. Although that percentage of products is low (about 2.3%) it points to a correlation between top performing products and poor performing ones. This demonstrates how critical it is to establish customer loyalty and to disincentivize products not bought by them in inventory stockings.
+
+Next, we will be seeing the seasonal distribution of these low performing products to identify if any of them are seasonal. Following that, we will also see if these poor performing products are regional at all.
+
+##### Seasonal Distribution of Poor Performing Products
+
+```{r}
+low_perf_crossref <- cleaned_online_retail_data_final %>%
+  filter(Description %in% bottom_purchased$Description)
+
+season_distribution <- low_perf_crossref %>%
+  group_by(Season) %>%
+  summarise(TotalSold = sum(Quantity)) %>%
+  mutate(
+    Percentage = round(100 * TotalSold / sum(TotalSold), 1),
+    Label = paste0(Season, "\n", Percentage, "%")
+  )
+
+ggplot(season_distribution, aes(x = "", y = TotalSold, fill = Season)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5), size = 4) +
+  labs(title = "Seasonal Sales Distribution for Low Performing Products") +
+  theme_void() +
+  scale_fill_brewer(palette = "Set3")
+
+
+```
+
+In this bar chart above, we can see that these low performing products sell more during the winter than compared to products generally, with a smaller amount coming in the fall, a lower amount in the spring, and an even lower amount during the summer. This points to these poor performing products being seasonal products, mostly concentrated around the winter. This can be bolstered further by seeing that only 21% (versus 32.7% above) of quantity sold throughout the year in the data set happen in the winter, meaning that these poor performing products tend to be more seasonal.
+
+This helps indicate that these poor performing products operate differently throughout the year compared to the top-performing products meaning there will be times throughout the year when some of these products will not need to be stocked fully (or even at all).
+
+Below, we will see if there are any additional properties of these poor performing products that differ than the top performing ones.
+
+##### Country Distribution of Poor Performing Products
+
+```{r}
+country_distribution <- low_perf_crossref %>%
+  group_by(Country) %>%
+  filter(Country != "Unspecified", Country != "European Community") %>%
+  summarise(TotalSold = sum(Quantity)) %>%
+  arrange(desc(TotalSold))
+
+ggplot(country_distribution, aes(x = reorder(Country, -TotalSold), y = TotalSold)) +
+  geom_col(fill = "tomato") +
+  labs(title = "Sales of Low Performing Products by Country",
+       x = "Country", y = "Quantity Sold") +
+  theme_minimal() +
+  coord_flip()
+```
+
+Unsurprisingly, the United Kingdom is going to constitute a vast amount of the sales here among poor performing products but we can see that Ireland seems to make up a significant percentage of the sales of these low performing products besides them, far surpassing the Netherlands who were the number two biggest buyer in quantity among the countries (see the above country section for more information).
+
+The other countries like Germany, Spain, and France are in positions that line up with their overall share in quantity. Overall it seems that some of these products may be more regional to Ireland as opposed to the Netherlands.
+
+Still though, there is not enough regional variation to point to these products being purely regional.
+
+
+##### Product Section Conclusion
+
+In this product section we have seen:
+
+* What the top performing products are
+* The Price Tier distribution of the top products
+* The Sales Tier distribution of the sales of these top products
+* Which products are performing poorly
+* How these poor performing products differ from top performing products by time and price tier
+
+Next, we will look at refunded orders.
+
+## Refunded Orders
+
+An important consideration for this data set is the relatively significant amount of refunded orders. Earlier before, we separated these refunded orders into a separate data set which we are going to use now to extract useful insights out of.
+
+To begin with, let's figure out what is left in this data set after the cleaning changes made above and see what percentage it would make out of a combined set with the cleaned_online_retail_data_final data set.
+
+```{r}
+quantity_composition <- dbGetQuery(con, '
+SELECT 
+  OrderType,
+  SUM(Quantity) AS TotalQuantity,
+  ROUND(SUM(Quantity) * 100.0 / (
+    SELECT SUM(TotalQty) FROM (
+      SELECT SUM(Quantity) AS TotalQty FROM cleaned_online_retail_data_final
+      UNION ALL
+      SELECT SUM(ABS(Quantity)) AS TotalQty FROM refunded_orders
+    )
+  ), 1) AS Percentage
+FROM (
+  SELECT "Non-refunded" AS OrderType, Quantity FROM cleaned_online_retail_data_final
+  UNION ALL
+  SELECT "Refunded" AS OrderType, ABS(Quantity) AS Quantity FROM refunded_orders
+)
+GROUP BY OrderType;')
+
+
+ggplot(quantity_composition, aes(x = "", y = TotalQuantity, fill = OrderType)) +
+  geom_col(width = 1) +
+  coord_polar("y", start = 0) +
+  labs(
+    title = "Refunded vs Non-Refunded Orders",
+    fill = "Order Type"
+  ) +
+  theme_void() +
+  scale_fill_manual(values = c("Refunded" = "lightblue", "Non-refunded" = "steelblue")) +
+  geom_text(aes(label = paste0(Percentage, "%")),
+            position = position_stack(vjust = 0.5),
+            color = "white", size = 5)
+```
+
+As we can see, the amount of refunded orders in terms of quantity comprise of 5.1% of the total amount of orders in the data set representing a small, but meaningful part of the story we can tell with this data.
+
+
+#### Refunded Orders vs. Non-refunded Order Amounts
+
+Something useful to see between refunded and non-refunded purchases is whether the amounts in those purchases differ at all. Below, we will use some code to see if there is a difference.
+
+```{r}
+avg_items_refunded <- refunded_orders %>%
+  group_by(InvoiceNo) %>%
+  summarise(TotalItems = abs(sum(Quantity))) %>%
+  summarise(AverageItemsPerOrder = mean(TotalItems)) %>%
+  pull(AverageItemsPerOrder)
+
+avg_items_purchased <- cleaned_online_retail_data_final %>%
+  group_by(InvoiceNo) %>%
+  summarise(TotalItems = abs(sum(Quantity))) %>%
+  summarise(AverageItemsPerOrder = mean(TotalItems)) %>%
+  pull(AverageItemsPerOrder)
+
+avg_items_summary <- tibble(
+  Type = c("Refunded", "Purchased"),
+  AverageItemsPerOrder = c(avg_items_refunded, avg_items_purchased)
+)
+
+avg_items_summary
+```
+What we can see is that the average amount of items returned is about 78 which is significantly lower than the 271 that are purchased. This points to refunds being dominated by low quantity refunds, meaning that bulk B2B sales are not the culprit for most of these refunded purchases.
+
+Below, we will use the QuantityTier column to better see the comparison in quantities purchased and refunded.
+
+```{r}
+# QuantityTier distribution for purchased data
+qty_tier_purchased <- cleaned_online_retail_data_final %>%
+  filter(!is.na(QuantityTier)) %>%
+  count(QuantityTier) %>%
+  mutate(
+    Dataset = "Purchased",
+    Percent = n / sum(n)
+  )
+
+# QuantityTier distribution for refunded data
+qty_tier_refunded <- refunded_orders %>%
+  filter(!is.na(QuantityTier)) %>%
+  count(QuantityTier) %>%
+  mutate(
+    Dataset = "Refunded",
+    Percent = n / sum(n)
+  )
+
+# Combine and plot
+combined_qty_tier <- bind_rows(qty_tier_purchased, qty_tier_refunded)
+
+ggplot(combined_qty_tier, aes(x = QuantityTier, y = Percent, fill = Dataset)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Quantity Tier Distribution: Purchased vs Refunded Orders",
+    x = "Quantity Tier",
+    y = "Percentage of Orders"
+  ) +
+  geom_text(
+    aes(label = scales::percent(Percent, accuracy = 1)),
+    position = position_dodge(width = 0.9),
+    vjust = -0.5,
+    size = 3,
+    color = "black",
+    fontface = "bold"
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_minimal()
+
+
+```
+
+Here, we can see that there are significantly more low quantity tier refunds than there are low quantity purchases in respect to each data set (47% for purchased products vs. 69% for refunded products). In every other quantity tier, the purchased products seem to constitute a higher or roughly equivalent percentage (39% vs. 22% for medium, 11% vs. 6% for high, and 3% vs. 3% for very high).
+
+This points to low quantity refunds making up a good majority of refunds, indicating a statistically higher likelihood for low quantity purchases to be refunded.
+
+Now, we are going to figure out when these refunds are happening and where in the world it is happening the most.
+
+```{r}
+country_refunded <- dbGetQuery(con, 'SELECT 
+                  Country,
+                  ROUND(SUM(TotalSale), 2) AS RefundedTotalSales,
+                  ABS(SUM(Quantity)) AS RefundedQty
+                 FROM refunded_orders
+                  WHERE Country NOT IN ("Unspecified", "European Community")
+                 GROUP BY Country
+                 ORDER BY RefundedQty DESC
+                 LIMIT 10'
+                 )
+
+country_refunded
+
+ggplot(country_refunded, aes(x = Country, y = RefundedQty)) +
+  geom_bar(stat = "identity", fill = "firebrick") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Countries by Refunded Quantity",
+    x = "Country",
+    y = "Refunded Quantity"
+  ) +
+  theme_minimal() +
+  scale_y_continuous(
+    limits = c(0, 275000),
+    breaks = seq(0, 275000, by = 50000),
+    labels = scales::comma
+  ) +
+  theme(axis.text.y = element_text(size = 8))
+
+```
+Understandably, the United Kingdom is the country with the most amount of refunds given its dominance in overall sales compared to the other countries in the data set. The only thing of not is that one country, the United States, was not included in the top 10 countries with the most amount of products purchased but is included here while Spain, a country that was, is not. Something potentially related to the United States has a very low repeat customer rate of 25% while all other countries on this list have ones above 50% (see the above section for more information about customer repeat rates per country).
+
+We can go a little further with looking at the country data for the refund data set. One useful thing that can be done is by seeing the refund rates for each country by seeing how much is sold in each country and figuring out how much is returned.
+
+```{r}
+purchased_by_country <- dbGetQuery(con, '
+SELECT 
+  Country,
+  SUM(Quantity) AS TotalPurchased
+FROM cleaned_online_retail_data_final
+WHERE Country NOT IN ("Unspecified", "European Community")
+GROUP BY Country
+')
+
+refunded_by_country <- dbGetQuery(con, '
+SELECT 
+  Country,
+  SUM(Quantity) AS TotalRefunded
+FROM refunded_orders
+WHERE Country NOT IN ("Unspecified", "European Community")
+GROUP BY Country')
+
+country_refund_rate <- purchased_by_country %>%
+  inner_join(refunded_by_country, by = "Country") %>%
+  mutate(
+    RefundRate = TotalRefunded / TotalPurchased
+  ) %>%
+  arrange(RefundRate)
+
+top_refund_rate_countries <- country_refund_rate %>% slice_head(n = 10)
+
+ggplot(top_refund_rate_countries, aes(x = reorder(Country, RefundRate), y = RefundRate)) +
+  geom_bar(stat = "identity", fill = "darkorange") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Countries by Refund Rate",
+    x = "Country",
+    y = "Refund Rate (%)"
+  ) +
+  geom_text(aes(label = scales::percent(RefundRate, accuracy = 1)), hjust = -0.1, size = 3, color="black", fontface = "bold") +
+  theme_minimal()
+
+
+```
+Through the code above, we can see that the refund rates for most countries are pretty low, with most countries having one less than or equal to 12%. However, there is a notable outlier: the United States of America with a refund rate of 58%.
+
+This high refund rate warrants closer inspection. There are several possible reasons for this such as:
+
+* Shipping complications
+* Product Satisfaction Issues
+* Discrepancies in product market fit for the U.S.
+
+This is confounded with the low repeat customer rate for the United States as well as their low amount of quantity purchased, which is 2,458.
+
+Now that we have a proper breakdown of where refunds are taking place, we can now discover what time of year refunded purchases are happening the most.
+
+
+```{r}
+refunded_monthly_sales <- dbGetQuery(con, '
+            SELECT 
+              InvoiceMonth,
+              ABS(ROUND(SUM(TotalSale), 2)) AS TotalSales,
+              ABS(SUM(Quantity)) AS TotalQuantity
+              FROM refunded_orders
+              WHERE NOT (InvoiceYear = "2011" AND InvoiceMonth = "December" AND InvoiceDay >= 1)
+              GROUP BY InvoiceMonth
+              ORDER BY TotalSales DESC;')
+
+refunded_monthly_sales$InvoiceMonth <- factor(
+  refunded_monthly_sales$InvoiceMonth,
+  levels = c("December", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November")
+)
+
+ggplot(refunded_monthly_sales, aes(x = InvoiceMonth, y = TotalSales)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  labs(
+    title = "Total Sales per Month (December 2010-November 2011)",
+    x = "Month",
+    y = "Total Sales (£)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# This plots the data on a graph that demonstrates total quantity sales per month
+ggplot(refunded_monthly_sales, aes(x = InvoiceMonth, y = TotalQuantity)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  labs(
+    title = "Total Quantity Refunds per Month (December 2010-November 2011)",
+    x = "Month",
+    y = "Total Sales (£)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+   scale_y_continuous(
+    limits = c(0, 90000),
+    breaks = seq(0, 90000, by = 10000),
+    labels = scales::comma
+  )
+```
+*Note that these numbers have been made positive for easier viewing. The actual numbers in the data set are negative when summed together*
+
+As we can see above, refunded purchases seem to come after the Christmas shopping season has concluded, with there being a lot of refunds being recorded in the month of January. Later on in the year there are some returns in the fall, which is when sales start to increase (see above monthly sales analysis).
+
+Overall, this indicates refunds are only concentrated within given parts of the year and are not something that is a systemic wide-reaching problem in the organization.
+
+One other useful way of looking at the refunded data is figuring out how it correlates to the purchases of repeat and non-repeat customers. Below will be some code to figure out how exactly the refunded purchases may or may not differ compared to the non-refunded purchases when using the repeat customer column.
+
+```{r}
+refunded_repeat_customer_trends <- refunded_orders %>%
+  group_by(RepeatCustomer) %>%
+  summarise(
+    TotalOrders = n()
+  ) %>%
+  mutate(
+    PercentOrders = TotalOrders / sum(TotalOrders) * 100,
+    Label = paste0(round(PercentOrders, 1), "%")
+  )
+
+refunded_repeat_customer_trends
+
+ggplot(refunded_repeat_customer_trends, aes(x = "", y = PercentOrders, fill = RepeatCustomer)) +
+  geom_bar(width = 1, stat = "identity", color = "white") +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5), color = "white", size = 5) +
+  scale_fill_manual(values = c("TRUE" = "darkblue", "FALSE" = "lightblue")) +
+  labs(
+    title = "Percentage of Orders Made by Repeat Customers",
+    fill = "Repeat Customer"
+  ) +
+  theme_void()
+```
+Compared to the previously inspected purchases that were not refunded, we can see that there is a bit more non-repeat-customers here. Previously, we found that 8.4% of the purchases *in total* were made by non-repeat-customers. Here, we can see that almost 25% of customers who returned their products are not repeat customers. This helps inventory being able to indicate what sort of orders are going to be more highly prioritized. In addition, this helps the company see what behaviors of repeat customers are affecting the company's operations.
+
+Below, we will discover the top 15 products that are the most refunded and how this data affects inventory and overall sales.
+
+```{r echo=FALSE, message=FALSE}
+refunded_orders <- refunded_orders %>%
+  filter(Description != "CRUK Commission")
+
+con <- dbConnect(SQLite(), ":memory:")
+copy_to(con, cleaned_online_retail_data, "cleaned_online_retail_data", temporary = FALSE)
+copy_to(con, refunded_orders, "refunded_orders", temporary = FALSE)
+```
+
+
+```{r}
+top_refunded <- dbGetQuery(con, 'SELECT 
+                  Description,
+                  ROUND(SUM(TotalSale), 2) AS RefundedTotalSales,
+                  SUM(Quantity) AS RefundedQty
+                 FROM refunded_orders
+                 GROUP BY Description
+                 ORDER BY RefundedTotalSales 
+                 LIMIT 15;')
+
+top_refunded
+```
+
+*Note: in the midst of finding the top refunded products, we discovered a "CRUK Commission" that is likely referring to a donation to Cancer Research UK. These were filtered out in silently above so as to avoid clutter*
+
+When comparing the top 15 refunded and top 15 purchased products (as seen above in section number 4) side-by-side, we can see a high crossover between the two, though it is not exact. Below, we will join these two together and see which of these top products have the highest refund rate to better inform the company of the products that are being returned.
+
+```{r}
+refund_rate_df <- top_purchased %>%
+  inner_join(top_refunded, by = c("Description")) %>%
+  mutate(RefundRate = abs(RefundedQty / SoldQty))
+
+ggplot(refund_rate_df, aes(x = reorder(Description, RefundRate), y = RefundRate)) +
+  geom_col(fill = "red") +
+  coord_flip() +  # Makes it horizontal for readability
+  labs(
+    title = "Refund Rate of Top Products",
+    x = "Product",
+    y = "Refund Rate"
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  geom_text(aes(label = scales::percent(RefundRate, accuracy = 1)), hjust = 0.5, size = 3, color="black", fontface = "bold") +
+  theme_minimal()
+```
+After the join has been performed, only nine products remain. This is significant enough though due to what we can about these products below.
+
+The return rates for the PAPER CRAFT, LITTLE BIRDIE and MEDIUM CERMAIC TOP STORAGE JAR are extremely high, with the Little Birdie product having a 100% return rate and the MEDIUM CERAMIC TOP STORAGE JAR having one of 96%. These values are extremely problematic and point to some heavy problem with these products.
+
+This could include:
+* Heavy restocking problems
+* Mass defects
+* Data entry errors
+* Return fraud
+* Customer dissatisfaction
+
+These issues will have to be looked into in other departments to ensure that this data is correct and also to figure out what could be the potential causes of this.
+
+Fortunately, the rest of these refund rates are significantly lower, with the next highest refund rates being 7%, 7%, 4% and all others being lower than 4%. This points to a healthy return rate that isn't troubling, unlike the two previously mentioned outliers.
+
+##### Poor Performing Product Refund Rate
+
+To conclude our refund rate section, we will look at the refund rates of the poor performing products we discussed above.
+
+```{r}
+product_refund_rate <- bottom_purchased %>%
+  group_by(Description) %>%
+  summarise(TotalSold = sum(SoldQty)) %>%
+  inner_join(refunded_orders %>%
+               group_by(Description) %>%
+               summarise(TotalRefunded = abs(sum(Quantity))), by = "Description") %>%
+  mutate(RefundRate = TotalRefunded / TotalSold) %>%
+  arrange(desc(RefundRate))
+
+product_refund_rate
+
+high_refund_low_perf <- product_refund_rate %>%
+  filter(!is.na(RefundRate)) %>%
+  slice_max(order_by = RefundRate, n = 20)  
+
+ggplot(high_refund_low_perf, aes(x = reorder(Description, RefundRate), y = RefundRate)) +
+  geom_col(fill = "firebrick") +
+  coord_flip() +
+  labs(
+    title = "Refund Rate of Low-Performing Products",
+    x = "Product",
+    y = "Refund Rate"
+  ) +
+  geom_text(aes(label = scales::percent(RefundRate, accuracy = 1)), 
+            hjust = -0.1, size = 3, color = "black") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, max(high_refund_low_perf$RefundRate) + 0.2)) +
+  theme_minimal()
+```
+
+For these poor performing products, we can see that their refund rates are extremely high. While we saw one product with a refund rate of 100% and 96% earlier, we can see that the highest refund rates here are at 100% or even exceed that amount.
+
+These high refund rates reflect severe customer dissatisfaction, potential errors in data handling, or other operational issues. While these products constitute an extremely small percentage of the overall number of products sold, these are concerning numbers that should be addressed.
+
+##### Conclusion to Refunded Orders Data
+
+In this section we have seen when refunded orders are being made, where they are being made, how repeat customer rates differ compared to the official purchases data set, and what products are being refunded the most. All of this allows inventory to be able to see which products need to be disincentivized but also indicates to the company which products are extremely unsellable and should be cut out of inventory completely.
+
+This process is has also exposed deep data flaws in certain products, showing the top number one product having a refund rate of 100% and another top one having one of 96%. Overall, this helps the analysis significantly as we can make actionable calls about which products are ineffective to sell, how repeat customers are less likely to return products, and just giving an overall view of how common refunds are for the data set.
+
+
+### Conclusion to the Analysis Section
+
+In the analysis section, a lot of useful work was accomplished:
+
+* Sales across time were measured
+* Sales across different countries was displayed
+* Refunded products were analyzed
+* Top selling products were analyzed 
+* Repeat Customer column was integrated for countries, sales across time, and various categories
+* The Quantity and Price Tiers were utilized to determine which type of products are selling the best
+
+This is just a limited list of what was discovered, but there is obviously a lot more. In the final "Act" section of this report, we will break down all the useful points of analysis and utilize it for inventory optimization recommendations.
+
+## Recommendations Based off of the Analysis
+
+Throughout the analysis, we made a variety of different findings such as the high concentration of relatively lower-priced goods making up a vast amount of purchases, the high refund rates of certain products, and how sales differ by time and country.
+
+Now that we are in the act section we can properly use these findings to make clear and useful actions that will help the company decide on what to pursue in terms of long term action.
+
+#### Product Conclusions
+
+As mentioned above, we noticed that among the top 15 products, 73% of those products were classified as being "low" in terms of price tier meaning that the unit prices of those products were between $1 and $5. While it is also true that lower selling products also comprise a significant amount of lower priced products, it is still clear that the overall favor is towards products of a lower price tier.
+
+Among these "low" price tier products, a majority of purchases with these products comprise of 7 or more of them per order. This also applies for products of the "medium" price tier as well. 
+
+Thus, it seems that inventory should prioritize these low-priced products as they comprise a vast majority of sales and the amount of quantity sold.
+
+#### Addressing High Refund Products
+
+Certain products, such as PAPER CRAFT, LITTLE BIRDIE and MEDIUM CERAMIC TOP STORAGE JAR, had refund rates approaching or exceeding 100%. These represent either data errors, major quality issues, or extremely poor customer fit. Inventory managers should either discontinue these products entirely or investigate the underlying causes before considering future stocking.
+
+#### Prepare Massive Stocking for Fall Shopping Spikes (plus August)
+
+Above, we can could see that there as a massive influx in shopping whether it be through the seasonal chart, the fall months of September, October, and November making up a significant part of quantity sold throughout the year the data was recorded via the heat maps and bar charts. Alongside the average item per order spiking in August, with that increase continuing in September and October (which are higher than every other month in the year), it is imperative that stocking is prioritized at that time.
+
+
+#### Refund Preparation after Christmas Holiday Season
+
+Refunds constitute ~5% of all items sold, with most occurring in January following the holiday season. Inventory planning should account for this predictable post-holiday return surge by streamlining return logistics and anticipating stock write-backs. This ensures that returned items can be processed quickly and efficiently, minimizing their financial impact.
+
+#### Work on Improving Customer Retention
+
+Top-performing products are closely linked to repeat customers, while many poor performers lack repeat purchases altogether. To leverage this, inventory efforts should emphasize products that are favored by repeat buyers. Complementary marketing strategies such as loyalty programs, targeted promotions, or product bundling could further strengthen customer retention and reinforce inventory efficiency.
+
+#### Tailor Inventory by Region
+
+While the United Kingdom drives the vast majority of sales, other countries show unique behaviors. For example, Ireland purchases a disproportionate share of low-performing items, and the United States, while a relatively small market, has an unusually high refund rate of 58%. Inventory stocking should be tailored to these regional differences, with particular caution exercised when allocating stock to the U.S. market.
+
+## Conclusion
+
+Through this analysis, we were able to inspect, clean, analyze, and make conclusions based off an online retail data set. This will allow a company to be better able to make informative decisions about inventory stocking throughout a year and serves as a useful model for other analysis work on retail data sets.
+
